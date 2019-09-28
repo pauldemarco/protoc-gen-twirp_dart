@@ -19,98 +19,6 @@ const apiTemplate = `
 import '{{.Path}}';
 {{- end}}
 
-{{- range .Models}}
-{{- if not .Primitive}}
-class {{.Name}} {
-
-	{{.Name}}(
-	{{range .Fields -}}
-		this.{{.Name}},
-	{{- end}});
-
-    {{range .Fields -}}
-    {{.Type}} {{.Name}};
-    {{end}}
-	
-	factory {{.Name}}.fromJson(Map<String,dynamic> json) {
-		{{- range .Fields -}}
-			{{if .IsMap}}
-			var {{.Name}}Map = new {{.Type}}();
-			(json['{{.JSONName}}'] as Map<String, dynamic>)?.forEach((key, val) {
-				{{if .MapValueField.IsMessage}}
-				{{.Name}}Map[key] = new {{.MapValueField.Type}}.fromJson(val as Map<String,dynamic>);
-				{{else}}
-				if (val is String) {
-					{{if eq .MapValueField.Type "double"}}
-						{{.Name}}Map[key] = double.parse(val);
-					{{end}}
-					{{if eq .MapValueField.Type "int"}}
-						{{.Name}}Map[key] = int.parse(val);
-					{{end}}
-				} else if (val is num) {
-					{{if eq .MapValueField.Type "double"}}
-						{{.Name}}Map[key] = val.toDouble();
-					{{end}}
-					{{if eq .MapValueField.Type "int"}}
-						{{.Name}}Map[key] = val.toInt();
-					{{end}}
-				}
-				{{end}}
-			});
-			{{end}}
-		{{end}}
-
-		return new {{.Name}}(
-		{{- range .Fields -}}
-		{{if .IsMap}}
-		{{.Name}}Map,
-		{{else if and .IsRepeated .IsMessage}}
-		json['{{.JSONName}}'] != null
-          ? (json['{{.JSONName}}'] as List)
-              .map((d) => new {{.InternalType}}.fromJson(d))
-              .toList()
-          : <{{.InternalType}}>[],
-		{{else if .IsRepeated }}
-		json['{{.JSONName}}'] != null ? (json['{{.JSONName}}'] as List).cast<{{.InternalType}}>() : <{{.InternalType}}>[],
-		{{else if and (.IsMessage) (eq .Type "DateTime")}}
-		{{.Type}}.tryParse(json['{{.JSONName}}']),
-		{{else if .IsMessage}}
-		new {{.Type}}.fromJson(json['{{.JSONName}}']),
-		{{else}}
-		json['{{.JSONName}}'] as {{.Type}}, 
-		{{- end}}
-		{{- end}}
-		);	
-	}
-
-	Map<String,dynamic>toJson() {
-		var map = new Map<String, dynamic>();
-    	{{- range .Fields -}}
-		{{- if .IsMap }}
-		map['{{.JSONName}}'] = json.decode(json.encode({{.Name}}));
-		{{- else if and .IsRepeated .IsMessage}}
-		map['{{.JSONName}}'] = {{.Name}}?.map((l) => l.toJson())?.toList();
-		{{- else if .IsRepeated }}
-		map['{{.JSONName}}'] = {{.Name}}?.map((l) => l)?.toList();
-		{{- else if and (.IsMessage) (eq .Type "DateTime")}}
-		map['{{.JSONName}}'] = {{.Name}}.toIso8601String();
-		{{- else if .IsMessage}}
-		map['{{.JSONName}}'] = {{.Name}}.toJson();
-		{{- else}}
-    	map['{{.JSONName}}'] = {{.Name}};
-    	{{- end}}
-		{{- end}}
-		return map;
-	}
-
-  @override
-  String toString() {
-    return json.encode(toJson());
-  }
-}
-{{end -}}
-{{end -}}
-
 {{range .Services}}
 abstract class {{.Name}} {
 	{{- range .Methods}}
@@ -136,14 +44,13 @@ class Default{{.Name}} implements {{.Name}} {
 		var url = "${hostname}${_pathPrefix}{{.Path}}";
 		var uri = Uri.parse(url);
     	var request = new Request('POST', uri);
-		request.headers['Content-Type'] = 'application/json';
-    	request.body = json.encode({{.InputArg}}.toJson());
+		request.headers['Content-Type'] = 'application/protobuf';
+    	request.bodyBytes = {{.InputArg}}.writeToBuffer();
     	var response = await _requester.send(request);
 		if (response.statusCode != 200) {
      		throw twirpException(response);
     	}
-    	var value = json.decode(response.body);
-    	return {{.OutputType}}.fromJson(value);
+    	return {{.OutputType}}.fromBuffer(response.bodyBytes);
 	}
     {{end}}
 
@@ -230,8 +137,10 @@ func (ctx *APIContext) ApplyImports(d *descriptor.FileDescriptorProto) {
 	}
 	deps = append(deps, Import{"dart:convert"})
 
+	deps = append(deps, Import{strings.Replace(d.GetName(), ".proto", ".pb.dart", 1)})
+
 	for _, dep := range d.Dependency {
-		if dep == "google/protobuf/timestamp.proto" {
+		if strings.HasPrefix(dep, "google/") {
 			continue
 		}
 		importPath := path.Dir(dep)
@@ -252,6 +161,7 @@ func (ctx *APIContext) ApplyImports(d *descriptor.FileDescriptorProto) {
 				fullPath = path.Join("..", fullPath)
 			}
 		}
+		fullPath = strings.Replace(fullPath, "twirp", "pb", 1)
 		deps = append(deps, Import{fullPath})
 	}
 	ctx.Imports = deps
@@ -326,16 +236,16 @@ func CreateClientAPI(d *descriptor.FileDescriptorProto, generator *generator.Gen
 
 	// Parse all Messages for generating typescript interfaces
 
-	for _, m := range d.GetMessageType() {
-		model := &Model{
-			Name: m.GetName(),
-		}
-		for _, f := range m.GetField() {
-			model.Fields = append(model.Fields, newField(f, m, d, generator))
-		}
-		ctx.AddModel(model)
+	// for _, m := range d.GetMessageType() {
+	// 	model := &Model{
+	// 		Name: m.GetName(),
+	// 	}
+	// 	for _, f := range m.GetField() {
+	// 		model.Fields = append(model.Fields, newField(f, m, d, generator))
+	// 	}
+	// 	ctx.AddModel(model)
 
-	}
+	// }
 
 	// Parse all Services for generating typescript method interfaces and default client implementations
 	for _, s := range d.GetService() {
